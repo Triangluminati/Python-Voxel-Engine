@@ -2,8 +2,8 @@ import pyopencl as cl
 import array
 from ctypes import c_float, c_int, c_double, c_uint, c_size_t
 from OpenGL.GL import * #for future
-import pyopencl.cltypes as clt
 import pygame
+import pyopencl.cltypes as clt
 import sys
 import time
 import math
