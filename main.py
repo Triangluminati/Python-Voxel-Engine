@@ -1,392 +1,177 @@
-import pyopencl as cl
-import array
-from ctypes import c_float, c_int, c_double, c_uint, c_size_t
-from OpenGL.GL import * #for future
-import pygame
-import pyopencl.cltypes as clt
-import sys
-import time
+from OpenGL.GL import *
+from OpenGL.GL.shaders import compileProgram, compileShader
+import glfw
+import numpy
+import pyrr
 import math
-import threading
+import fragment_shader_code as fsc
+import vertex_shader_code as vsc
+import world
 
-#CONTROLS ARE WASD TO MOVE
-#ARROW KEYS TO LOOK AROUND
+def win_resize(win, width, height):
+    projection = pyrr.matrix44.create_perspective_projection_matrix(80, width/height, 0.1, 100)
+    #glViewport(0, 0, width, height) #already does this by default? at least on macos
 
-plat = cl.get_platforms()[0]
-dev  = plat.get_devices()[0]
-ctx  = cl.Context([dev])
-queue = cl.CommandQueue(ctx)
+if not glfw.init():
+    raise Exception("couldnt initialize glfw (window)")
 
-
-x = array.array('f')
-y = array.array('f')
-z = array.array('f')
-rot = array.array('f')
-
-posx = 0
-posy = 0
-posz = 0
-posxrot = 0
-posyrot = 0
-poszrot = 0
-screenwidth = 500
-screenheight = 500
-fovy = 90
-
-def addVox(_x, _y, _z, _rot = 0):
-    x.append(_x)
-    y.append(_y)
-    z.append(_z)
-    rot.append(_rot)
-#for i in range(30):
-#    for j in range(30):
-#        for m in range(30):
-#            addVox(i, m, j+50)
-
-addVox(1, 1, 1)
-mf = cl.mem_flags
-
-src = """
-#define MYPI 3.1415926535897932384626433832795028841f
-//I just copied a bunch from http://www.geom.uiuc.edu/~huberty/math5337/groupe/digits.html
-
-inline float rad(float deg) {
-    return deg * (MYPI / 180.0f);
-}
-
-inline float3 rot3d(float x, float y, float z, float xrot, float yrot, float zrot) {
-    float xRot = xrot;          float yRot = yrot;          float zRot = zrot;
-    float xrad = rad(xRot);     float yrad = rad(yRot);     float zrad = rad(zRot);
-    float xcos = cos(xrad);     float xsin = sin(xrad); 
-    float ycos = cos(yrad);     float ysin = sin(yrad);
-    float zcos = cos(zrad);     float zsin = sin(zrad);
-
-    //{ycos*xcos, zsin*ysin*xcos-zcos*xsin, zcos*ysin*xcos+zsin*xsin},
-    //{ycos*xsin, zsin*ysin*xsin+zcos*xcos, zcos*ysin*xsin-zsin*xcos},
-    //{-ysin, zsin*ycos, zcos*ycos}
-
-    float3 newpoint;
-    newpoint.x = x*ycos*xcos  +  y*(zsin*ysin*xcos-zcos*xsin)+  z*(zcos*ysin*xcos+zsin*xsin);
-    newpoint.y = x*ycos*xsin  +  y*(zsin*ysin*xsin+zcos*xcos)+  z*(zcos*ysin*xsin-zsin*xcos);
-    newpoint.z = -x*ysin      +  y*zsin*ycos                 +  z*zcos*ycos;
-    return newpoint;
-}
-
-inline float3 newrot3d(float x, float y, float z, float xrot, float yrot, float zrot) {
-    float xrad = rad(xrot);     float yrad = rad(yrot); //float zrad = rad(zrot);
-    float cy = cos(yrad), sy = sin(yrad);
-    float cx = cos(xrad), sx = sin(xrad);
-
-    // yaw (y)
-    float x1 =  x*cy + z*sy;
-    float y1 =  y;
-    float z1 = -x*sy + z*cy;
-
-    // pitch (x)
-    float x2 = x1;
-    float y2 = y1*cx - z1*sx;
-    float z2 = y1*sx + z1*cx;
-
-    float3 newpoint;
-    newpoint.x = x2;
-    newpoint.y = y2;
-    newpoint.z = z2;
-    return newpoint;
-}
-__kernel void add_vec(
-    __global const float *x,
-    __global const float *y,
-    __global const float *z,
-    __global const float *rot,
-    __global float *out,
-    const int out_data_count,
-    const float screen_w,
-    const float screen_h,
-    const float fov_y,
-    const float cam_x,
-    const float cam_y,
-    const float cam_z,
-    const float cam_rot_x,
-    const float cam_rot_y,
-    const float cam_rot_z
-) {
-    int gid = get_global_id(0);
-    
-    float cx = screen_w/2;
-    float cy = screen_h/2;
-
-
-    float radians = fov_y * (MYPI / 180.0f);
-    float tan_calc = tan(radians / 2);
-    float focal_len = cx / tan_calc;
-
-
-    float xx = x[gid];
-    float yy = y[gid];
-    float zz = z[gid];
-
-    // 8 points in a tri (triangle for those who are new) 3 values in a point (x, y, and z)
-    float tris[8][3];
-
-    float points[8][2];
-    
-    tris[0][0] = xx;         tris[0][1] = yy;         tris[0][2] = zz;
-    tris[1][0] = xx + 1;     tris[1][1] = yy + 1;     tris[1][2] = zz;
-    tris[2][0] = xx + 1;     tris[2][1] = yy;         tris[2][2] = zz;
-    tris[3][0] = xx;         tris[3][1] = yy + 1;     tris[3][2] = zz;
-    tris[4][0] = xx;         tris[4][1] = yy;         tris[4][2] = zz + 1;
-    tris[5][0] = xx + 1;     tris[5][1] = yy + 1;     tris[5][2] = zz + 1;
-    tris[6][0] = xx;         tris[6][1] = yy + 1;     tris[6][2] = zz + 1;
-    tris[7][0] = xx + 1;     tris[7][1] = yy;         tris[7][2] = zz + 1;
-    
-    int dissapear = 8; //if this num gets to 0 then dont render it later
-    for(int i = 0; i < 8; i++) {
-        // I need to add local rotations here
-        //if (rot[gid] != 0) {
-        //  rotate(tri)
-        //}
-        //something like this where rotate will rotate on all 3 axis. Maybe use quaternion?
-
-        tris[i][0] -= cam_x;
-        tris[i][1] -= cam_y;
-        tris[i][2] -= cam_z;
+glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 4)
+glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1)
+glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
+glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, GL_TRUE)
 
 
 
-        float3 rotated_point3 = newrot3d(tris[i][0], tris[i][1], tris[i][2], cam_rot_x, cam_rot_y, cam_rot_z);
-        tris[i][0] = rotated_point3.x;
-        tris[i][1] = rotated_point3.y;
-        tris[i][2] = rotated_point3.z;
-
-        //now rotate after changing to world position rather than local position
-        //skip for now just to get working
-
-        if(tris[i][2] <= 0) {
-            dissapear -=1;
-            tris[i][2] = 0.1; //so we dont divide by 0 in a sec
-        }
-        points[i][0] = cx + focal_len * (tris[i][0] / tris[i][2]);
-        if(points[i][0] > screen_w*2) { points[i][0] = screen_w*2; }
-        if(points[i][0] < -screen_w) { points[i][0] = -screen_w; }
-        points[i][1] = cy + focal_len * (tris[i][1] / tris[i][2]);
-        if(points[i][1] > screen_h*2) { points[i][1] = screen_h*2; }
-        if(points[i][1] < -screen_h) { points[i][1] = -screen_h; }
-
-    }
-    // I need to create a rotation function here now and apply it to everything
-
-    int out_position = gid*16;
-    int o = out_position;
-    if (dissapear <= 0) {
-        for(int i = 0; i < 16; i++) {
-            out[o + i] = -1;
-        }// just check to see if each rectangle is all -1 and dont draw if it is
-
-        return;
-    }
-
-    out[o] =    points[0][0]; out[o+1] = points[0][1];
-    out[o+2] =  points[1][0]; out[o+3] = points[1][1];
-    out[o+4] =  points[2][0]; out[o+5] = points[2][1];
-    out[o+6] =  points[3][0]; out[o+7] = points[3][1];
-    out[o+8] =  points[4][0]; out[o+9] = points[4][1];
-    out[o+10] = points[5][0]; out[o+11] = points[5][1];
-    out[o+12] = points[6][0]; out[o+13] = points[6][1];
-    out[o+14] = points[7][0]; out[o+15] = points[7][1];
-}
-"""
-
-
-data_size = 16
-
-prg = cl.Program(ctx, src).build()
-
-xb = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=x)
-yb = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=y)
-zb = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=z)
-rotb = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=rot)
-n = len(x)
-out = array.array('f', [0.0]*(n*data_size))
-outb = cl.Buffer(ctx, mf.WRITE_ONLY, out.buffer_info()[1] * out.itemsize)
-kern_add_vec = cl.Kernel(prg, 'add_vec')
-
-
-
-
-def doCalc():
-
-    
-    out = array.array('f', [0.0]*(n*data_size))
-
-    
-    kern_add_vec(queue, (n,), None,
-        xb, yb, zb, rotb, outb,
-        clt.int(data_size),
-        clt.float(screenwidth), clt.float(screenheight), clt.float(fovy),
-        clt.float(posx), clt.float(posy), clt.float(posz),
-        clt.float(posxrot), clt.float(posyrot), clt.float(poszrot)
-    )
-    
-    cl.enqueue_copy(queue, out, outb).wait()
-
-    out = out.tolist()
-
-
-    
-    return out  
-
-
-
-o = doCalc()
-
-
-screen = pygame.display.set_mode((screenwidth, screenheight))
-pygame.display.set_caption("test")
-
-
-white = (255, 255, 255)
-blue = (0, 0, 255)
-
-running = True
-starting_time = time.time()
-yspd = 0
-spdmult = 0.5
-rotmult = 2
-frames = 0
-frame_time = time.time()
-clock = pygame.time.Clock()
-
-kernal_time = 0
-draw_time = 0
-w, a, s, d, space, lshift = False, False, False, False, False, False
-up, down, left, right = False, False, False, False
-
-last_time = time.perf_counter()
-game_time = 1/60
-
-while running:
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
-        elif event.type == pygame.KEYDOWN:
+window = glfw.create_window(1280, 720, "Title", None, None)
+glfw.set_window_size_callback(window, win_resize) #doesnt work properly for some reason
+glfw.make_context_current(window)
+#x y z r g b # add textures next
+verts = [
             
-            if event.key == pygame.K_w:
-                w = True
-            if event.key == pygame.K_s:
-                s = True
-            if event.key == pygame.K_d:
-                d = True
-            if event.key == pygame.K_a:
-                a = True
-            if event.key == pygame.K_SPACE:
-                space = True
-            if event.key == pygame.K_LSHIFT:
-                lshift = True
-            if event.key == pygame.K_LEFT:
-                left = True
-            if event.key == pygame.K_RIGHT:
-                right = True
-            if event.key == pygame.K_UP:
-                up = True
-            if event.key == pygame.K_DOWN:
-                down = True
-        elif event.type == pygame.KEYUP:
-            if event.key == pygame.K_w:
-                w = False
-            if event.key == pygame.K_s:
-                s = False
-            if event.key == pygame.K_d:
-                d = False
-            if event.key == pygame.K_a:
-                a = False
-            if event.key == pygame.K_SPACE:
-                space = False
-            if event.key == pygame.K_LSHIFT:
-                lshift = False
-            if event.key == pygame.K_LEFT:
-                left = False
-            if event.key == pygame.K_RIGHT:
-                right = False
-            if event.key == pygame.K_UP:
-                up = False
-            if event.key == pygame.K_DOWN:
-                down = False
-    rad = math.radians(posyrot)
-    cos = math.cos(rad) *spdmult
-    sin = math.sin(rad) *spdmult
+         -0.5, 0.5, 0.5, 0.0, 0.0, 1.0,
+         -0.5, -0.5, 0.5, 1.0, 0.0, 0.0,
+         0.5,  0.5, 0.5, 0.0, 1.0, 0.0,
+         0.5, -0.5, 0.5, 1.0, 1.0, 1.0,
+
+         -0.5, 0.5, -0.5, 0.0, 0.0, 0.5,
+         -0.5, -0.5, -0.5, 0.0, 1.0, 0.0,
+         0.5,  0.5, -0.5, 0.0, 1.0, 0.0,
+         0.5, -0.5, -0.5, 1.0, 1.0, 1.0,
+         ],
+verts = numpy.array(verts, dtype=numpy.float32)
+
+inds = [0, 1, 2, 1, 2, 3,
+        4, 5, 6, 5, 6, 7,
+        0, 2, 4, 2, 4, 6,
+        1, 3, 5, 3, 5, 7,
+        0, 1, 4, 1, 4, 5,
+        2, 3, 6, 3, 6, 7
+        ]
+
+inds = numpy.array(inds, dtype=numpy.uint32)
+
+
+voxel_positions = numpy.array([[v.x, v.y, v.z] for v in world.gen], dtype=numpy.float32)
+
+vao = glGenVertexArrays(1)
+glBindVertexArray(vao)
+
+vbo = glGenBuffers(1)
+glBindBuffer(GL_ARRAY_BUFFER, vbo)
+glBufferData(GL_ARRAY_BUFFER, verts.nbytes, verts, GL_STATIC_DRAW)
+
+glEnableVertexAttribArray(0)
+glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 24, ctypes.c_void_p(0))
+
+glEnableVertexAttribArray(1)
+glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 24, ctypes.c_void_p(12)) #36 bytes (9*4) after the verticies
+
+ebo = glGenBuffers(1)
+glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo)
+glBufferData(GL_ELEMENT_ARRAY_BUFFER, inds.nbytes, inds, GL_STATIC_DRAW)
+
+instance_vbo = glGenBuffers(1)
+glBindBuffer(GL_ARRAY_BUFFER, instance_vbo)
+glBufferData(GL_ARRAY_BUFFER, voxel_positions.nbytes, voxel_positions, GL_STATIC_DRAW)
+
+glEnableVertexAttribArray(2)
+glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 12, ctypes.c_void_p(0))
+glVertexAttribDivisor(2, 1)
+
+shader = compileProgram(compileShader(vsc.prog, GL_VERTEX_SHADER), compileShader(fsc.prog, GL_FRAGMENT_SHADER))
+
+
+
+
+
+
+glUseProgram(shader)
+
+glClearColor(0, 0.1, 0.1, 1)
+glEnable(GL_DEPTH_TEST)
+
+projection = pyrr.matrix44.create_perspective_projection_matrix(80, 1280/720, 0.1, 10000)
+translation = pyrr.matrix44.create_from_translation(pyrr.Vector3([0,0,0]))
+view = pyrr.matrix44.create_from_translation(pyrr.Vector3([0, 0, 0]))
+
+model_location = glGetUniformLocation(shader, "model")
+projection_location = glGetUniformLocation(shader, "projection")
+view_location = glGetUniformLocation(shader, "view")
+voxel_position_location = glGetUniformLocation(shader, "pos")
+
+glUniformMatrix4fv(projection_location, 1, GL_FALSE, projection)
+glUniformMatrix4fv(model_location, 1, GL_FALSE, translation)
+glUniformMatrix4fv(view_location, 1, GL_FALSE, view)
+
+
+last_time = 0
+movement_fps = 60
+y_rotation = 0
+x_rotation = 0
+speed = 0.2
+xp, yp, zp = 0, 0, -3
+force_mouse = False
+
+
+
+frames = 0
+last_fps_time = 0
+while not glfw.window_should_close(window):
+    glfw.poll_events()
+    glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT)
     
-    current_time = time.perf_counter()
-    if current_time - last_time > game_time:
-        last_time = current_time
-        fb = w-s
-        lr = d-a
-        ud = space-lshift
-        zspd = cos * fb + sin * lr
-        xspd = cos * lr - sin * fb
-        yspd = -ud * spdmult
-        posx+=xspd
-        posy+=yspd
-        posz+=zspd
-
-        posyrot+= (left-right) * rotmult
-        posxrot-= (up-down) * rotmult
-
-    ctime = time.time()
-    o = doCalc()
-    kernal_time += time.time() - ctime
-
-    ctime = time.time()
-    screen.fill(white)
-
-    #getFromList
-    def gfl(l, pos, ind):
-        #print((l[pos + ind*2], l[pos + ind*2 + 1]))
-        return (l[pos + ind*2], l[pos + ind*2 + 1])
-    
-    def drawPoly(_screen, _col, _pts, backfaceCulling = True, cull_ind1 = 0, cull_ind2 = 1, cull_ind3 = 2):
-        if backfaceCulling:
-            ax = _pts[cull_ind1][0]; ay = _pts[cull_ind1][1]
-            bx = _pts[cull_ind2][0]; by = _pts[cull_ind2][1]
-            cx = _pts[cull_ind3][0]; cy = _pts[cull_ind3][1]
-            cross = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
-            if(cross < 0):
-                return
-        pygame.draw.polygon(_screen, _col, _pts, 0)
-
-    for i in range(int(len(o)/16)):
-        pos = i * 16
-        p0 = gfl(o, pos, 0)
-        if(p0[0] == -1):
-            continue
-        p1 = gfl(o, pos, 1)
-        p2 = gfl(o, pos, 2)
-        p3 = gfl(o, pos, 3)
-        p4 = gfl(o, pos, 4)
-        p5 = gfl(o, pos, 5)
-        p6 = gfl(o, pos, 6)
-        p7 = gfl(o, pos, 7)
-        do_backface_culling = True
-        drawPoly(screen, blue, [p0,  p2, p1,p3],    do_backface_culling, 0, 1, 3)#front #0 1 3 for backface culling
-        drawPoly(screen, blue, [p4,  p6, p5, p7],   do_backface_culling, 0, 1, 3)#back # 4 6 7 for backface culling
-        drawPoly(screen, blue, [p7, p2, p1, p5],    do_backface_culling, 0, 3, 2)#right # 7 5 1 for backface culling
-        drawPoly(screen, blue, [p0, p3, p6, p4],    do_backface_culling, 0, 1, 3)#left # 0 3 4 for backface culling
-        drawPoly(screen, blue, [p3, p1, p5, p6],    do_backface_culling, 0, 1, 3)#bottom # 3 1 6 for backface culling
-        drawPoly(screen, blue, [p4, p7, p2, p0],    do_backface_culling, 0, 2, 3)#top # 4 2 0 for backface culling
-    pygame.display.flip()
-    draw_time += time.time() - ctime
-    #print("Time to draw: " + str(time.time()-ctime) + " seconds")
-
-    ctime = time.time()
+    current_time = glfw.get_time()
     frames+=1
-    if(ctime - frame_time >= 1):
-        print(f"fps: {frames}\nkernal time per second: {kernal_time}\ndraw time per second: {draw_time}")
-        frames = 0
-        frame_time = ctime
-        kernal_time = 0
-        draw_time = 0
+    if current_time-last_fps_time > 1:
+        last_fps_time = current_time
+        print(frames)
+        frames=0
+    if current_time - last_time > 1/movement_fps:
+
+        last_time = current_time
+
+        if force_mouse:
+            width, height = glfw.get_window_size(window)
+            x_mouse, y_mouse = glfw.get_cursor_pos(window)
+            y_rotation += (width/2 - x_mouse) * 0.1
+            x_rotation += (height/2 - y_mouse) * 0.1
+            glfw.set_cursor_pos(window, width/2, height/2)
 
 
-    clock.tick(1000)
+        if glfw.get_key(window, glfw.KEY_ESCAPE) == glfw.PRESS:
+            force_mouse = not force_mouse
+            if force_mouse:
+                width, height = glfw.get_window_size(window)
+                glfw.set_cursor_pos(window, width/2, height/2)
+        rad = math.radians(y_rotation % 360)
+        if glfw.get_key(window, glfw.KEY_W) == glfw.PRESS:
+            xp += math.sin(rad) * speed
+            zp += math.cos(rad) * speed
+        if glfw.get_key(window, glfw.KEY_S) == glfw.PRESS:
+            xp -= math.sin(rad) * speed
+            zp -= math.cos(rad) * speed
+        if glfw.get_key(window, glfw.KEY_A) == glfw.PRESS:
+            xp += math.cos(rad) * speed
+            zp -= math.sin(rad) * speed
+        if glfw.get_key(window, glfw.KEY_D) == glfw.PRESS:
+            xp -= math.cos(rad) * speed
+            zp += math.sin(rad) * speed
+        if glfw.get_key(window, glfw.KEY_SPACE) == glfw.PRESS:
+            yp-=speed
+        if glfw.get_key(window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS:
+            yp+=speed
+    view = pyrr.matrix44.create_from_translation(pyrr.Vector3([xp, yp, zp]))
+    x_rotation_matrix = pyrr.matrix44.create_from_x_rotation(math.radians(x_rotation))
+    y_rotation_matrix = pyrr.matrix44.create_from_y_rotation(math.radians(y_rotation))
+    model = pyrr.matrix44.multiply(y_rotation_matrix, x_rotation_matrix)
+    glUniformMatrix4fv(model_location, 1, GL_FALSE, model)
+    glUniformMatrix4fv(view_location, 1, GL_FALSE, view)
+    
+    #for v in world.gen:
+    #    pos = pyrr.matrix44.create_from_translation(pyrr.Vector3([v.x, v.y, v.z]))
+    #    glUniformMatrix4fv(voxel_position_location, 1, GL_FALSE, pos)
+    glDrawElementsInstanced(GL_TRIANGLES, inds.size, GL_UNSIGNED_INT, None, voxel_positions.shape[0])
 
-pygame.quit()
-sys.exit()
+    glfw.swap_buffers(window)
+
+glfw.terminate()
