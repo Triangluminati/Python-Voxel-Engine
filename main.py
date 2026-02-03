@@ -36,8 +36,8 @@ window = glfw.create_window(1280, 720, "Voxel Engine", None, None)
 glfw.set_window_size_callback(window, win_resize) #doesnt work properly for some reason
 glfw.make_context_current(window)
 #x y z r g b # add textures next
+test_mult = 1
 verts = [
-            
          -0.5, 0.5, 0.5,     0.0, 0.0, 1.0,   0.0,   0.0, 0.0,
          -0.5, -0.5, 0.5,    1.0, 0.0, 0.0,   0.0,   0.0, 1.0,
          0.5,  0.5, 0.5,     0.0, 1.0, 0.0,   0.0,   1.0, 0.0,
@@ -67,7 +67,8 @@ verts = [
          0.5, -0.5, 0.5,     1.0, 1.0, 1.0,   5.0,   0.0, 1.0,
          0.5,  0.5, -0.5,    0.0, 1.0, 0.0,   5.0,   1.0, 0.0,
          0.5, -0.5, -0.5,    1.0, 1.0, 1.0,   5.0,   1.0, 1.0,
-         ],
+         ]
+
 verts = numpy.array(verts, dtype=numpy.float32)
 
 inds = [0, 1, 2, 1, 2, 3,
@@ -82,8 +83,20 @@ inds = [0, 1, 2, 1, 2, 3,
 inds = numpy.array(inds, dtype=numpy.uint32)
 
 world_data = world.World()
-temp_block = world.Block(0, 0, 0)
-world_data.add_block(temp_block)
+
+
+for x in range(-640, 640):
+    for z in range(-640, 640):
+        blck = world.grass_block(x, 0, z)
+        #print(blck.unpack())
+        world_data.add_block(blck)
+#quit()
+# td = [chunk.unpack() for key, chunk in world_data.chunks.items()]
+# print(len(td))
+# for l in td:
+#     print(l[-5:])
+#quit()
+
 voxel_data = numpy.array([block.unpack() for block in world_data.get_all_blocks()], dtype=numpy.float32)
 
 vao = glGenVertexArrays(1)
@@ -102,6 +115,7 @@ glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, verts.itemsize * 9, ctypes.c_voi
 glEnableVertexAttribArray(6)
 glVertexAttribPointer(6, 1, GL_FLOAT, GL_FALSE, verts.itemsize * 9, ctypes.c_void_p(24))
 
+
 ebo = glGenBuffers(1)
 glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo)
 glBufferData(GL_ELEMENT_ARRAY_BUFFER, inds.nbytes, inds, GL_STATIC_DRAW)
@@ -117,20 +131,24 @@ glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT)
 glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
 glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
 
+
+chunk_cube_size = voxel_data.itemsize * 9 *  ( ( world.CHUNK_SIZE ** 2 ) * world.WORLD_HEIGHT )
+EMPTY_CHUNK = bytes(chunk_cube_size)
 instance_vbo = glGenBuffers(1)
 glBindBuffer(GL_ARRAY_BUFFER, instance_vbo)
-glBufferData(GL_ARRAY_BUFFER, voxel_data.nbytes, voxel_data, GL_STATIC_DRAW)
+glBufferData(GL_ARRAY_BUFFER, world_data.total_indicies * chunk_cube_size, None, GL_DYNAMIC_DRAW)
+
 
 glEnableVertexAttribArray(3)
-glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 12, ctypes.c_void_p(0))
+glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 36, ctypes.c_void_p(0))
 glVertexAttribDivisor(3, 1)
 
 glEnableVertexAttribArray(4)
-glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, 12, ctypes.c_void_p(12))
+glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, 36, ctypes.c_void_p(12))
 glVertexAttribDivisor(4, 1)
 
 glEnableVertexAttribArray(5)
-glVertexAttribPointer(5, 3, GL_FLOAT, GL_FALSE, 12, ctypes.c_void_p(24))
+glVertexAttribPointer(5, 3, GL_FLOAT, GL_FALSE, 36, ctypes.c_void_p(24))
 glVertexAttribDivisor(5, 1)
 
 #glEnableVertexAttribArray(4)
@@ -145,8 +163,13 @@ glVertexAttribDivisor(5, 1)
 #use this to stack textures ontop of each other like a stack of papers where each paper is an image
 #then the vertex buffer just chooses the right paper to pull from the stack depending on what information you give
 #it (an index for the image)
+
+
+#allocate space for all the textures
 glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, textures.image_width, textures.image_height, len(textures.texture_list), 0, GL_RGBA, GL_UNSIGNED_BYTE, None)
 
+
+#add each image to gpu memory in a 3d texture
 for ind, tex in enumerate(textures.texture_data_list):
     glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, ind, textures.image_width, textures.image_height, 1, GL_RGBA, GL_UNSIGNED_BYTE, tex)
 
@@ -160,7 +183,8 @@ shader = compileProgram(compileShader(vsc.prog, GL_VERTEX_SHADER), compileShader
 glUseProgram(shader)
 
 glClearColor(0, 0.1, 0.1, 1)
-glEnable(GL_DEPTH_TEST)
+
+glEnable(GL_DEPTH_TEST) #so the 3d will work, basically adds z axis
 
 glEnable(GL_BLEND) #used to display transparency in images
 glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA) #used to display transparency in images
@@ -184,10 +208,10 @@ last_time = 0
 movement_fps = 60
 y_rotation = 0
 x_rotation = 0
-speed = 0.025
+speed = 2.8 / movement_fps
 max_speed = 0.05
 max_jump = 0.6
-xp, yp, zp = 0, -4, -3
+xp, yp, zp = 4, -3, 4
 xs, ys, zs = 0, 0, 0
 force_mouse = False
 fly = True
@@ -260,16 +284,19 @@ glfw.set_key_callback(window, key_callback)
 
 frames = 0
 last_fps_time = 0
+
+print_loop_times = False
 while not glfw.window_should_close(window):
     glfw.poll_events()
     glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT)
-    
+    ttime = glfw.get_time()
     current_time = glfw.get_time()
     frames+=1
     if current_time-last_fps_time > 1:
         last_fps_time = current_time
         print(frames)
-        print(xp, yp, zp)
+        print(f"xpos {xp}", f"ypos {yp}", f"zpos {zp}")
+        print(f"chunk x = {xp//world.CHUNK_SIZE}  z = {zp//world.CHUNK_SIZE}")
         frames=0
     if current_time - last_time > 1/movement_fps:
 
@@ -347,11 +374,75 @@ while not glfw.window_should_close(window):
     model = pyrr.matrix44.multiply(y_rotation_matrix, x_rotation_matrix)
     glUniformMatrix4fv(model_location, 1, GL_FALSE, model)
     glUniformMatrix4fv(view_location, 1, GL_FALSE, view)
-    
+    if print_loop_times:
+        print(f"everything else {glfw.get_time() - ttime}")
+    ttime = glfw.get_time()
     #for v in world.gen:
     #    pos = pyrr.matrix44.create_from_translation(pyrr.Vector3([v.x, v.y, v.z]))
     #    glUniformMatrix4fv(voxel_position_location, 1, GL_FALSE, pos)
-    glDrawElementsInstanced(GL_TRIANGLES, inds.size, GL_UNSIGNED_INT, None, voxel_data.shape[0])
+    glBindBuffer(GL_ARRAY_BUFFER, instance_vbo)
+    changed_buffer_sub_data = world_data.update(xp, yp, zp)
+
+
+    # indicies_to_remove = changed_buffer_sub_data["to_unload"]
+    # for value in indicies_to_remove:
+    #     print("removing indices: " + str(value))
+    #     #glBufferSubData(GL_ARRAY_BUFFER,  chunk_cube_size * value, chunk_cube_size, EMPTY_CHUNK)
+    
+    indicies_to_add = changed_buffer_sub_data["to_load"]
+    for key, value in indicies_to_add:
+        print("adding_indices")
+        print(f"key {key}", f"val {value}")
+        if key in world_data.chunks:
+            print("YES")
+            _data_list = world_data.chunks[key].unpack()
+            _data = numpy.array(_data_list , dtype=numpy.float32)
+            print(_data_list[0])
+            glBufferSubData(GL_ARRAY_BUFFER,  chunk_cube_size * value, _data.nbytes, _data)
+        #else:
+        #    _data = EMPTY_CHUNK
+        #    glBufferSubData(GL_ARRAY_BUFFER,  chunk_cube_size * value, chunk_cube_size, _data)
+    if print_loop_times:
+        print(f"update and buffersubdata {glfw.get_time() - ttime}")
+    ttime = glfw.get_time()
+    glBindVertexArray(vao)
+    glUseProgram(shader)
+    for key, value in world_data.loaded_chunks.items():
+        n = 0
+        if key in world_data.chunks:
+            n = world_data.chunks[key].block_count
+            glBindBuffer(GL_ARRAY_BUFFER, instance_vbo)
+            b = value * chunk_cube_size
+
+            glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 36, ctypes.c_void_p(b+0))
+            glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, 36, ctypes.c_void_p(b+12))
+            glVertexAttribPointer(5, 3, GL_FLOAT, GL_FALSE, 36, ctypes.c_void_p(b+24))
+
+            glDrawElementsInstanced(GL_TRIANGLES, inds.size, GL_UNSIGNED_INT, None, n)
+    # for i in range(world_data.total_indicies):
+    #     n = 0
+    #     #print(world_data.loaded_chunks)
+    #     #print(world_data.loaded_chunks)
+        
+    #     for key, value in world_data.loaded_chunks.items():
+    #         #print(world_data.loaded_chunks.values())
+    #         if int(i) == int(value):
+
+    #             if key in world_data.chunks:
+                    
+    #                 n = world_data.chunks[key].block_count
+    #                 #print(key)
+    #                 glBindBuffer(GL_ARRAY_BUFFER, instance_vbo)
+    #                 b = i * chunk_cube_size
+
+    #                 glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 36, ctypes.c_void_p(b+0))
+    #                 glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, 36, ctypes.c_void_p(b+12))
+    #                 glVertexAttribPointer(5, 3, GL_FLOAT, GL_FALSE, 36, ctypes.c_void_p(b+24))
+
+    #                 glDrawElementsInstanced(GL_TRIANGLES, inds.size, GL_UNSIGNED_INT, None, n)
+
+    if print_loop_times:
+        print(f"draw everything {glfw.get_time() - ttime}")
 
     glfw.swap_buffers(window)
 

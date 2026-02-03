@@ -26,7 +26,6 @@ float get_face_layer(float face) {
 }
 
 void main() {
-    
     vec3 world_pos = a_position + i_offset;
     gl_Position = projection * model * view * vec4(world_pos, 1.0);
     v_color = a_color;
